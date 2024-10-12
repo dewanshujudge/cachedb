@@ -195,7 +195,6 @@ int main() {
             continue;  // accept failed, ignore and try again
         }
 
-
         while (1) {
             int32_t err = one_request(connfd);
             if (err) {
