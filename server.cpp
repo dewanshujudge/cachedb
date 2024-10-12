@@ -84,8 +84,6 @@ void parse(char *big, SOCKET connfd)
         where+=len;
     }
 
-    cerr<<"where= "<<where<<endl;
-
     printf("client says: %s\n", &ms);
 
     const char reply[] = "world";
