@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <iostream>
+using namespace std;
 
 #pragma comment(lib, "Ws2_32.lib")  // Link with Ws2_32.lib for networking
 
@@ -124,7 +126,10 @@ int main() {
         goto L_DONE;
     }
 
+    cout<<"reached here"<<endl;
+
 L_DONE:
+    cout<<"there was an error"<<endl;
     closesocket(fd);  // Use closesocket() in Windows
     WSACleanup();     // Clean up Winsock
     return 0;
