@@ -29,7 +29,7 @@ void parse(char *big, SOCKET connfd);
 
 static int32_t recv_full(SOCKET fd, char *buf, size_t n) {
 
-    cout<<"at recv"<<endl;
+    std::cout<<"at recv"<<endl;
     while (n > 0) {
         cout<<"n is "<<n<<endl;
         int rv = recv(fd, &buf[0], n,0);  // Use recv() in Windows
@@ -91,7 +91,7 @@ void parse(char *big, SOCKET connfd)
     uint32_t rlen = (uint32_t)strlen(reply);
     memcpy(wbuf, &rlen, 4);
     memcpy(&wbuf[4], reply, rlen);
-    cout<<"hrere in send "<<endl;
+    std::cout<<"hrere in send "<<endl;
     send_all(connfd, wbuf, 4 + rlen);
 
 }
