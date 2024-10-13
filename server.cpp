@@ -9,7 +9,7 @@
 using namespace std;
 
 #pragma comment(lib, "Ws2_32.lib")  // Link with Ws2_32.lib for networking
-int where{0};
+
 const int new_buf_size = 4096;
 
 static void msg(const char *msg) {
@@ -32,10 +32,13 @@ static int32_t recv_full(SOCKET fd, char *buf, size_t n) {
     cout<<"at recv"<<endl;
     while (n > 0) {
         cout<<"n is "<<n<<endl;
-        int rv = recv(fd, &buf[where], n,0);  // Use recv() in Windows
+        int rv = recv(fd, &buf[0], n,0);  // Use recv() in Windows
         // rv = recv(fd, buf, n, 0);
-         
-        cout<<"here enter"<<endl;
+
+        // we receive as much data as the client sends and then call the parse function
+        // The parse function handles the head and message and calls the send function to send the reply.
+
+        // After that the flow returns back to parse and since n>0 we start the loop again.
         if (rv <= 0) {
             return -1;  // error or unexpected EOF
         }
@@ -63,25 +66,22 @@ static int32_t send_all(SOCKET fd, const char *buf, size_t n) {
 
 void parse(char *big, SOCKET connfd) 
 {
-    cerr<<"where=  "<<where<<endl;
+    int where=0;
     fprintf(stderr, "%s\n","Reached");
     uint32_t len = 0;
     char ms[k_max_msg];
     if(where+4<new_buf_size)
     {
-        cerr<<"where= "<<where<<endl;
-        cerr<<"big[where]= "<<big[where]<<endl;
-        memcpy(&len,&big[where], 4);
-        where+=4;
+        memcpy(&len,big, 4);
+        big+=4;
     }
     cerr<<"len= "<<len<<endl;
-    cerr<<"big[where]= "<<big[where]<<endl;
-
+    
     if(where+len<new_buf_size)
     {
-        memcpy(&ms,&big[where],len);
+        memcpy(ms,big,len);
         ms[len]='\0';
-        where+=len;
+        big+=len;
     }
 
     printf("client says: %s\n", &ms);
@@ -89,14 +89,10 @@ void parse(char *big, SOCKET connfd)
     const char reply[] = "world";
     char wbuf[4 + sizeof(reply)];
     uint32_t rlen = (uint32_t)strlen(reply);
-    cout<<"atleast here"<<endl;
     memcpy(wbuf, &rlen, 4);
     memcpy(&wbuf[4], reply, rlen);
     cout<<"hrere in send "<<endl;
     send_all(connfd, wbuf, 4 + rlen);
-    //parse(big, where);
-
-    //where=0;
 
 }
 
