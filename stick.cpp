@@ -57,5 +57,12 @@ int main()
     //freopen("input.txt", "r", stdin);
     //freopen("output.txt", "w", stdout); 
 
-    cout<<"workd "<<endl;
+     char ar[5]={'a','b','c','d','e'};
+
+     /* memmove(&ar[2],&ar,2);
+     for(auto u: ar)cout<<u<<" "; */
+     cout<<endl;
+     memmove(&ar,&ar[2],3);
+     for(auto u: ar)cout<<u<<" ";
+    
 }
