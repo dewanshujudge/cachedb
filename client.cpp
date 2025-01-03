@@ -4,33 +4,29 @@
 #include <string.h>
 #include <stdio.h>
 #include <errno.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <netinet/ip.h>
 #include <string>
 #include <vector>
+// proj
+#include "common.h"
 
-// Windows-specific headers for socket programming
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#pragma comment(lib, "Ws2_32.lib")
-
-// Helper macros to simplify code changes
-#define close closesocket      // Replace close() with closesocket()
-#define read(fd, buf, n) recv(fd, buf, n, 0)    // Replace read() with recv()
-#define write(fd, buf, n) send(fd, buf, n, 0)   // Replace write() with send()
-#define ssize_t int
 
 static void msg(const char *msg) {
     fprintf(stderr, "%s\n", msg);
 }
 
 static void die(const char *msg) {
-    int err = WSAGetLastError();  // Get Windows-specific error code
+    int err = errno;
     fprintf(stderr, "[%d] %s\n", err, msg);
     abort();
 }
 
 static int32_t read_full(int fd, char *buf, size_t n) {
     while (n > 0) {
-        ssize_t rv = read(fd, buf, n);  // Use Windows-compatible recv()
+        ssize_t rv = read(fd, buf, n);
         if (rv <= 0) {
             return -1;  // error, or unexpected EOF
         }
@@ -43,7 +39,7 @@ static int32_t read_full(int fd, char *buf, size_t n) {
 
 static int32_t write_all(int fd, const char *buf, size_t n) {
     while (n > 0) {
-        ssize_t rv = write(fd, buf, n);  // Use Windows-compatible send()
+        ssize_t rv = write(fd, buf, n);
         if (rv <= 0) {
             return -1;  // error
         }
@@ -79,16 +75,8 @@ static int32_t send_req(int fd, const std::vector<std::string> &cmd) {
     return write_all(fd, wbuf, 4 + len);
 }
 
-enum {
-    SER_NIL = 0,
-    SER_ERR = 1,
-    SER_STR = 2,
-    SER_INT = 3,
-    SER_ARR = 4,
-};
-
 static int32_t on_response(const uint8_t *data, size_t size) {
-     if (size < 1) {
+    if (size < 1) {
         msg("bad response");
         return -1;
     }
@@ -139,6 +127,17 @@ static int32_t on_response(const uint8_t *data, size_t size) {
             printf("(int) %ld\n", val);
             return 1 + 8;
         }
+    case SER_DBL:
+        if (size < 1 + 8) {
+            msg("bad response");
+            return -1;
+        }
+        {
+            double val = 0;
+            memcpy(&val, &data[1], 8);
+            printf("(dbl) %g\n", val);
+            return 1 + 8;
+        }
     case SER_ARR:
         if (size < 1 + 4) {
             msg("bad response");
@@ -166,6 +165,7 @@ static int32_t on_response(const uint8_t *data, size_t size) {
 }
 
 static int32_t read_res(int fd) {
+    // 4 bytes header
     char rbuf[4 + k_max_msg + 1];
     errno = 0;
     int32_t err = read_full(fd, rbuf, 4);
@@ -185,12 +185,14 @@ static int32_t read_res(int fd) {
         return -1;
     }
 
+    // reply body
     err = read_full(fd, &rbuf[4], len);
     if (err) {
         msg("read() error");
         return err;
     }
 
+    // print the result
     int32_t rv = on_response((uint8_t *)&rbuf[4], len);
     if (rv > 0 && (uint32_t)rv != len) {
         msg("bad response");
@@ -200,21 +202,15 @@ static int32_t read_res(int fd) {
 }
 
 int main(int argc, char **argv) {
-    WSADATA wsa;  // Initialize Winsock
-    if (WSAStartup(MAKEWORD(2, 2), &wsa)) {
-        die("WSAStartup failed");
-    }
-
-    int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (fd == INVALID_SOCKET) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
         die("socket()");
     }
 
     struct sockaddr_in addr = {};
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(1234);  // Use htons for Windows
-    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);  // 127.0.0.1
-
+    addr.sin_port = ntohs(1234);
+    addr.sin_addr.s_addr = ntohl(INADDR_LOOPBACK);  // 127.0.0.1
     int rv = connect(fd, (const struct sockaddr *)&addr, sizeof(addr));
     if (rv) {
         die("connect");
@@ -235,6 +231,5 @@ int main(int argc, char **argv) {
 
 L_DONE:
     close(fd);
-    WSACleanup();  // Cleanup Winsock
     return 0;
 }
