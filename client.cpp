@@ -3,26 +3,34 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <errno.h>
+#include <string>
+#include <vector>
+
+// Windows-specific headers for socket programming
 #include <winsock2.h>
 #include <ws2tcpip.h>
-#include <iostream>
-using namespace std;
+#pragma comment(lib, "Ws2_32.lib")
 
-#pragma comment(lib, "Ws2_32.lib")  // Link with Ws2_32.lib for networking
+// Helper macros to simplify code changes
+#define close closesocket      // Replace close() with closesocket()
+#define read(fd, buf, n) recv(fd, buf, n, 0)    // Replace read() with recv()
+#define write(fd, buf, n) send(fd, buf, n, 0)   // Replace write() with send()
+#define ssize_t int
 
 static void msg(const char *msg) {
     fprintf(stderr, "%s\n", msg);
 }
 
 static void die(const char *msg) {
-    int err = WSAGetLastError();  // Windows-specific function to get error code
+    int err = WSAGetLastError();  // Get Windows-specific error code
     fprintf(stderr, "[%d] %s\n", err, msg);
     abort();
 }
 
-static int32_t recv_full(SOCKET fd, char *buf, size_t n) {
+static int32_t read_full(int fd, char *buf, size_t n) {
     while (n > 0) {
-        int rv = recv(fd, buf, n, 0);  // Use recv() in Windows
+        ssize_t rv = read(fd, buf, n);  // Use Windows-compatible recv()
         if (rv <= 0) {
             return -1;  // error, or unexpected EOF
         }
@@ -33,9 +41,9 @@ static int32_t recv_full(SOCKET fd, char *buf, size_t n) {
     return 0;
 }
 
-static int32_t send_all(SOCKET fd, const char *buf, size_t n) {
+static int32_t write_all(int fd, const char *buf, size_t n) {
     while (n > 0) {
-        int rv = send(fd, buf, n, 0);  // Use send() in Windows
+        ssize_t rv = write(fd, buf, n);  // Use Windows-compatible send()
         if (rv <= 0) {
             return -1;  // error
         }
@@ -48,89 +56,185 @@ static int32_t send_all(SOCKET fd, const char *buf, size_t n) {
 
 const size_t k_max_msg = 4096;
 
-static int32_t query(SOCKET fd, const char *text) {
-    uint32_t len = (uint32_t)strlen(text);
+static int32_t send_req(int fd, const std::vector<std::string> &cmd) {
+    uint32_t len = 4;
+    for (const std::string &s : cmd) {
+        len += 4 + s.size();
+    }
     if (len > k_max_msg) {
         return -1;
     }
 
     char wbuf[4 + k_max_msg];
-    memcpy(wbuf, &len, 4);  // assume little endian
-    memcpy(&wbuf[4], text, len);
-    if (int32_t err = send_all(fd, wbuf, 4 + len)) {
-        return err;
+    memcpy(&wbuf[0], &len, 4);  // assume little endian
+    uint32_t n = cmd.size();
+    memcpy(&wbuf[4], &n, 4);
+    size_t cur = 8;
+    for (const std::string &s : cmd) {
+        uint32_t p = (uint32_t)s.size();
+        memcpy(&wbuf[cur], &p, 4);
+        memcpy(&wbuf[cur + 4], s.data(), s.size());
+        cur += 4 + s.size();
     }
+    return write_all(fd, wbuf, 4 + len);
+}
 
-    // 4 bytes header
+enum {
+    SER_NIL = 0,
+    SER_ERR = 1,
+    SER_STR = 2,
+    SER_INT = 3,
+    SER_ARR = 4,
+};
+
+static int32_t on_response(const uint8_t *data, size_t size) {
+     if (size < 1) {
+        msg("bad response");
+        return -1;
+    }
+    switch (data[0]) {
+    case SER_NIL:
+        printf("(nil)\n");
+        return 1;
+    case SER_ERR:
+        if (size < 1 + 8) {
+            msg("bad response");
+            return -1;
+        }
+        {
+            int32_t code = 0;
+            uint32_t len = 0;
+            memcpy(&code, &data[1], 4);
+            memcpy(&len, &data[1 + 4], 4);
+            if (size < 1 + 8 + len) {
+                msg("bad response");
+                return -1;
+            }
+            printf("(err) %d %.*s\n", code, len, &data[1 + 8]);
+            return 1 + 8 + len;
+        }
+    case SER_STR:
+        if (size < 1 + 4) {
+            msg("bad response");
+            return -1;
+        }
+        {
+            uint32_t len = 0;
+            memcpy(&len, &data[1], 4);
+            if (size < 1 + 4 + len) {
+                msg("bad response");
+                return -1;
+            }
+            printf("(str) %.*s\n", len, &data[1 + 4]);
+            return 1 + 4 + len;
+        }
+    case SER_INT:
+        if (size < 1 + 8) {
+            msg("bad response");
+            return -1;
+        }
+        {
+            int64_t val = 0;
+            memcpy(&val, &data[1], 8);
+            printf("(int) %ld\n", val);
+            return 1 + 8;
+        }
+    case SER_ARR:
+        if (size < 1 + 4) {
+            msg("bad response");
+            return -1;
+        }
+        {
+            uint32_t len = 0;
+            memcpy(&len, &data[1], 4);
+            printf("(arr) len=%u\n", len);
+            size_t arr_bytes = 1 + 4;
+            for (uint32_t i = 0; i < len; ++i) {
+                int32_t rv = on_response(&data[arr_bytes], size - arr_bytes);
+                if (rv < 0) {
+                    return rv;
+                }
+                arr_bytes += (size_t)rv;
+            }
+            printf("(arr) end\n");
+            return (int32_t)arr_bytes;
+        }
+    default:
+        msg("bad response");
+        return -1;
+    }
+}
+
+static int32_t read_res(int fd) {
     char rbuf[4 + k_max_msg + 1];
-    int32_t err = recv_full(fd, rbuf, 4);
+    errno = 0;
+    int32_t err = read_full(fd, rbuf, 4);
     if (err) {
-        msg("recv() error");
+        if (errno == 0) {
+            msg("EOF");
+        } else {
+            msg("read() error");
+        }
         return err;
     }
 
+    uint32_t len = 0;
     memcpy(&len, rbuf, 4);  // assume little endian
     if (len > k_max_msg) {
         msg("too long");
         return -1;
     }
 
-    // reply body
-    err = recv_full(fd, &rbuf[4], len);
+    err = read_full(fd, &rbuf[4], len);
     if (err) {
-        msg("recv() error");
+        msg("read() error");
         return err;
     }
 
-    // do something
-    rbuf[4 + len] = '\0';
-    printf("server says: %s\n", &rbuf[4]);
-    return 0;
+    int32_t rv = on_response((uint8_t *)&rbuf[4], len);
+    if (rv > 0 && (uint32_t)rv != len) {
+        msg("bad response");
+        rv = -1;
+    }
+    return rv;
 }
 
-int main() {
-    WSADATA wsaData;
-
-    // Initialize Winsock (required in Windows)
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+int main(int argc, char **argv) {
+    WSADATA wsa;  // Initialize Winsock
+    if (WSAStartup(MAKEWORD(2, 2), &wsa)) {
         die("WSAStartup failed");
     }
 
-    // Create the socket
-    SOCKET fd = socket(AF_INET, SOCK_STREAM, 0);
+    int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (fd == INVALID_SOCKET) {
         die("socket()");
     }
 
     struct sockaddr_in addr = {};
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(1234);
+    addr.sin_port = htons(1234);  // Use htons for Windows
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);  // 127.0.0.1
 
     int rv = connect(fd, (const struct sockaddr *)&addr, sizeof(addr));
-    if (rv == SOCKET_ERROR) {
-        die("connect()");
+    if (rv) {
+        die("connect");
     }
 
-    // Multiple requests
-    int32_t err = query(fd, "hello1");
+    std::vector<std::string> cmd;
+    for (int i = 1; i < argc; ++i) {
+        cmd.push_back(argv[i]);
+    }
+    int32_t err = send_req(fd, cmd);
     if (err) {
         goto L_DONE;
     }
-    err = query(fd, "hello2");
+    err = read_res(fd);
     if (err) {
         goto L_DONE;
     }
-    err = query(fd, "hello3");
-    if (err) {
-        goto L_DONE;
-    }
-
-    cout<<"reached here"<<endl;
 
 L_DONE:
-    cout<<"there was an error"<<endl;
-    closesocket(fd);  // Use closesocket() in Windows
-    WSACleanup();     // Clean up Winsock
+    close(fd);
+    WSACleanup();  // Cleanup Winsock
     return 0;
 }
